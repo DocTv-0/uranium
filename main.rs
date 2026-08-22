@@ -23,3 +23,10 @@ pub fn encode_varint(buffer: &mut Vec<u8>, mut value: i32) {
         }
     }
 }
+
+/// Saves a String to a vector of bytes
+pub fn encode_string(buffer: &mut Vec<u8>, text: &str) {
+    let bytes = text.as_bytes();
+    encode_varint(buffer, bytes.len() as i32);
+    buffer.extend_from_slice(bytes);
+}
