@@ -1,6 +1,19 @@
 use tokio::io::{AsyncReadExt, AsyncWriteExt, Error, ErrorKind, Result};
 use tokio::net::{TcpListener, TcpStream};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Version {
+    Java26_2
+}
+
+impl Version {
+    pub const fn protocol(self) -> i32 {
+        match self {
+            Self::Java26_2 => 776,
+        }
+    }
+}
+
 /// Encodes and sends a packet to the client
 pub async fn send_packet(stream: &mut TcpStream, packet: Vec<u8>) -> Result<()> {
     let mut final_packet = Vec::new();
