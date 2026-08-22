@@ -41,6 +41,61 @@ async fn handle_client(mut stream: TcpStream) -> Result<()> {
     Ok(())
 }
 
+/// Reads a VarInt from the stream
+pub async fn read_varint(stream: &mut TcpStream) -> Result<i32> {
+    let mut value = 0;
+    let mut position = 0;
+
+    loop {
+        let mut current_byte = [0; 1];
+        stream.read_exact(&mut current_byte).await?;
+        let byte = current_byte[0];
+        
+        value |= ((byte & 0x7F) as i32) << position;
+        
+        if (byte & 0x80) == 0 {
+            return Ok(value);
+        }
+        
+        position += 7;
+        
+        if position >= 35 {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                "VarInt too long, max VarInt length 5 bytes",
+            ));
+        }
+    }
+}
+
+/// Reads a String from the stream
+pub async fn read_string(stream: &mut TcpStream) -> Result<String> {
+    let length = read_varint(stream).await?;
+    
+    if length < 0 || length > 32767 {
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            format!("Invalid String length : {}", length),
+        ));
+    }
+    
+    let length = length as usize;
+    let mut string_buffer = vec![0; length];
+    stream.read_exact(&mut string_buffer).await?;
+    
+    String::from_utf8(string_buffer).map_err(|e| {
+        Error::new(
+            ErrorKind::InvalidData,
+            format!("String contains invalid UTF-8: {}", e),
+        )
+    })
+}
+
+/// Reads an Unsigned Short from the stream
+pub async fn read_ushort(stream: &mut TcpStream) -> Result<u16> {
+    stream.read_u16().await
+}
+
 /// Encodes and sends a packet to the client
 pub async fn send_packet(stream: &mut TcpStream, packet: Vec<u8>) -> Result<()> {
     let mut final_packet = Vec::new();
