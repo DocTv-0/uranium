@@ -14,6 +14,13 @@ impl Version {
     }
 }
 
+pub enum ConnectionState {
+    Handshaking,
+    Status,
+    Login,
+    Play
+}
+
 /// Encodes and sends a packet to the client
 pub async fn send_packet(stream: &mut TcpStream, packet: Vec<u8>) -> Result<()> {
     let mut final_packet = Vec::new();
