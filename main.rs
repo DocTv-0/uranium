@@ -21,6 +21,26 @@ pub enum ConnectionState {
     Play
 }
 
+#[tokio::main]
+async fn main() -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:25565").await?;
+
+    loop {
+        let (stream, addr) = listener.accept().await?;
+        println!("[Server] New player joined: {}", addr);
+
+        tokio::spawn(async move {
+            if let Err(error) = handle_client(stream).await {
+                eprintln!("Errod handling client {}: {}", addr, error);
+            }
+        });
+    }
+}
+
+async fn handle_client(mut stream: TcpStream) -> Result<()> {
+    Ok(())
+}
+
 /// Encodes and sends a packet to the client
 pub async fn send_packet(stream: &mut TcpStream, packet: Vec<u8>) -> Result<()> {
     let mut final_packet = Vec::new();
