@@ -38,7 +38,92 @@ async fn main() -> Result<()> {
 }
 
 async fn handle_client(mut stream: TcpStream) -> Result<()> {
-    Ok(())
+    let mut state = ConnectionState::Handshaking;
+
+    loop {
+        match state {
+            ConnectionState::Handshaking => {
+                let packet_length = read_varint(&mut stream).await?;
+
+                let packet_id = read_varint(&mut stream).await?;
+
+                if packet_id != 0 {
+                    return Err(Error::new(
+                        ErrorKind::InvalidData,
+                        "Expected packet ID to be 0"
+                    ));
+                }
+
+                let protocol_version = read_varint(&mut stream).await?;
+
+                let server_address = read_string(&mut stream).await?;
+
+                let server_port = read_ushort(&mut stream).await?;
+
+                match read_varint(&mut stream).await? {
+                    1 => {state = ConnectionState::Status;},
+                    2 | 3 => {state = ConnectionState::Login;},
+                    _ => {
+                        return Err(Error::new(
+                            ErrorKind::InvalidData,
+                            "Expected 1, 2 or 3"
+                        ))
+                    }
+                }
+            }
+
+            ConnectionState::Status => {
+                let packet_length = read_varint(&mut stream).await?;
+
+                match read_varint(&mut stream).await? {
+                    0 => { // Status Request
+                        let mut packet: Vec<u8> = Vec::new();
+
+                        let status_json = r#"
+                            {
+                                "version": {
+                                    "name": "26.1",
+                                    "protocol": "776"
+                                },
+                                "players": {
+                                    "max": 100,
+                                    "online": 0,
+                                    "sample": []
+                                },
+                                "description": {
+                                    "text": "§aA rust server"
+                            }
+                        "#;
+
+                        encode_string(&mut packet, status_json);
+
+                        send_packet(&mut stream, packet).await?;
+
+
+                    }
+
+                    1 => { // Ping Request
+
+                    }
+
+                    _ => {
+                        return Err(Error::new(
+                            ErrorKind::InvalidData,
+                            "Invalid request"
+                        ))
+                    }
+                }
+            }
+
+            ConnectionState::Login => {
+                todo!()
+            }
+
+            ConnectionState::Play => {
+                todo!()
+            }
+        }
+    }
 }
 
 /// Reads a VarInt from the stream
