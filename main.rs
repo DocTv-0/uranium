@@ -42,7 +42,7 @@ pub struct ServerOptions {
 #[tokio::main]
 async fn main() -> Result<()> {
 
-    let server_options = ServerOptions{
+    let server_options = ServerOptions {
         description: "§aA Rust Minecraft Server",
         version: Version::Java26_2,
         max_players: 24,
