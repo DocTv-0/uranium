@@ -1,5 +1,7 @@
 use tokio::io::{AsyncReadExt, AsyncWriteExt, Error, ErrorKind, Result};
 use tokio::net::{TcpListener, TcpStream};
+use valence_nbt::{compound, Compound, List, to_binary};
+use serde_json::json;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Version {
@@ -12,6 +14,11 @@ impl Version {
             Self::Java26_2 => 776,
         }
     }
+    pub const fn version(self) -> &'static str {
+        match self {
+            Self::Java26_2 => "26.2",
+        }
+    }
 }
 
 pub enum ConnectionState {
@@ -21,13 +28,30 @@ pub enum ConnectionState {
     Play
 }
 
+#[derive(Clone, Copy)]
+pub struct ServerOptions {
+    description: &'static str,
+    version: Version,
+    max_players: i32,
+    verify_players: bool,
+    hardcore: bool,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    let listener = TcpListener::bind("127.0.0.1:25565").await?;
 
+    let server_options = ServerOptions{
+        description: "§aA Rust Minecraft Server",
+        version: Version::Java26_2,
+        max_players: 24,
+        verify_players: false,
+        hardcore: false,
+    };
+    
+    let listener = TcpListener::bind("127.0.0.1:25565").await?;
+    
     loop {
         let (stream, addr) = listener.accept().await?;
-        println!("[Server] New player joined: {}", addr);
 
         tokio::spawn(async move {
             if let Err(error) = handle_client(stream).await {
@@ -79,31 +103,38 @@ async fn handle_client(mut stream: TcpStream) -> Result<()> {
                     0 => { // Status Request
                         let mut packet: Vec<u8> = Vec::new();
 
-                        let status_json = r#"
-                            {
-                                "version": {
-                                    "name": "26.1",
-                                    "protocol": "776"
-                                },
-                                "players": {
-                                    "max": 100,
-                                    "online": 0,
-                                    "sample": []
-                                },
-                                "description": {
-                                    "text": "§aA rust server"
+                        let status_json = json!({
+                            "version": {
+                                "name": options.version.version(),
+                                "protocol": options.version.protocol(),
+                            },
+                            "players": {
+                                "max": options.max_players,
+                                "online": 0,
+                                "sample": []
+                            },
+                            "description": {
+                                "text": options.description
                             }
-                        "#;
+                        });
 
-                        encode_string(&mut packet, status_json);
+                        encode_varint(&mut packet, 0x00);
+
+                        encode_string(&mut packet, &status_json.to_string() as &str);
 
                         send_packet(&mut stream, packet).await?;
-
-
                     }
 
                     1 => { // Ping Request
+                        let timestamp = read_long(&mut stream).await?;
 
+                        let mut packet: Vec<u8> = Vec::new();
+
+                        encode_varint(&mut packet, 0x01);
+
+                        encode_long(&mut packet, timestamp);
+
+                        send_packet(&mut stream, packet).await?;
                     }
 
                     _ => {
@@ -113,6 +144,8 @@ async fn handle_client(mut stream: TcpStream) -> Result<()> {
                         ))
                     }
                 }
+
+                return Ok(());
             }
 
             ConnectionState::Login => {
@@ -123,6 +156,23 @@ async fn handle_client(mut stream: TcpStream) -> Result<()> {
                 todo!()
             }
         }
+    }
+}
+
+/// Reads an Unsigned Short from the stream
+pub async fn read_ushort(stream: &mut TcpStream) -> Result<u16> {
+    stream.read_u16().await
+}
+
+/// Reads a Long from the stream
+pub async fn read_long(stream: &mut TcpStream) -> Result<i64> {
+    stream.read_i64().await
+}
+
+/// Saves a Long to a vector of bytes
+pub fn encode_long(buffer: &mut Vec<u8>, value: i64) {
+    for byte in value.to_be_bytes() {
+        buffer.push(byte);
     }
 }
 
@@ -153,6 +203,21 @@ pub async fn read_varint(stream: &mut TcpStream) -> Result<i32> {
     }
 }
 
+/// Saves a VarInt to a vector of bytes
+pub fn encode_varint(buffer: &mut Vec<u8>, mut value: i32) {
+    loop {
+        let mut temporary = (value & 0x7F) as u8;
+        value = ((value as u32) >> 7) as i32;
+        if value != 0 {
+            temporary |= 0x80;
+        }
+        buffer.push(temporary);
+        if value == 0 {
+            break;
+        }
+    }
+}
+
 /// Reads a String from the stream
 pub async fn read_string(stream: &mut TcpStream) -> Result<String> {
     let length = read_varint(stream).await?;
@@ -176,9 +241,11 @@ pub async fn read_string(stream: &mut TcpStream) -> Result<String> {
     })
 }
 
-/// Reads an Unsigned Short from the stream
-pub async fn read_ushort(stream: &mut TcpStream) -> Result<u16> {
-    stream.read_u16().await
+/// Saves a String to a vector of bytes
+pub fn encode_string(buffer: &mut Vec<u8>, text: &str) {
+    let bytes = text.as_bytes();
+    encode_varint(buffer, bytes.len() as i32);
+    buffer.extend_from_slice(bytes);
 }
 
 /// Encodes and sends a packet to the client
@@ -190,26 +257,4 @@ pub async fn send_packet(stream: &mut TcpStream, packet: Vec<u8>) -> Result<()> 
     stream.write_all(&final_packet).await?;
     stream.flush().await?;
     Ok(())
-}
-
-/// Saves a VarInt to a vector of bytes
-pub fn encode_varint(buffer: &mut Vec<u8>, mut value: i32) {
-    loop {
-        let mut temporary = (value & 0x7F) as u8;
-        value = ((value as u32) >> 7) as i32;
-        if value != 0 {
-            temporary |= 0x80;
-        }
-        buffer.push(temporary);
-        if value == 0 {
-            break;
-        }
-    }
-}
-
-/// Saves a String to a vector of bytes
-pub fn encode_string(buffer: &mut Vec<u8>, text: &str) {
-    let bytes = text.as_bytes();
-    encode_varint(buffer, bytes.len() as i32);
-    buffer.extend_from_slice(bytes);
 }
