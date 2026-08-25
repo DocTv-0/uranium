@@ -35,6 +35,8 @@ pub struct ServerOptions {
     max_players: i32,
     verify_players: bool,
     hardcore: bool,
+    render_distance: i32,
+    simulation_distance: i32,
 }
 
 #[tokio::main]
@@ -46,6 +48,8 @@ async fn main() -> Result<()> {
         max_players: 24,
         verify_players: false,
         hardcore: false,
+        render_distance: 16,
+        simulation_distance: 5,
     };
     
     let listener = TcpListener::bind("127.0.0.1:25565").await?;
@@ -135,6 +139,8 @@ async fn handle_client(mut stream: TcpStream) -> Result<()> {
                         encode_long(&mut packet, timestamp);
 
                         send_packet(&mut stream, packet).await?;
+
+                        return Ok(())
                     }
 
                     _ => {
@@ -144,8 +150,6 @@ async fn handle_client(mut stream: TcpStream) -> Result<()> {
                         ))
                     }
                 }
-
-                return Ok(());
             }
 
             ConnectionState::Login => {
