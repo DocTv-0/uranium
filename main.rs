@@ -19,12 +19,23 @@ impl Version {
             Self::Java26_2 => "26.2",
         }
     }
+    pub const fn login_start_id(self) -> i32 {
+        match self {
+            Self::Java26_2 => 0x00,
+        }
+    }
+    pub const fn login_success_id(self) -> i32 {
+        match self {
+            Self::Java26_2 => 0x02,
+        }
+    }
 }
 
 pub enum ConnectionState {
     Handshaking,
     Status,
     Login,
+    Configuration,
     Play
 }
 
@@ -51,21 +62,21 @@ async fn main() -> Result<()> {
         render_distance: 16,
         simulation_distance: 5,
     };
-    
+
     let listener = TcpListener::bind("127.0.0.1:25565").await?;
-    
+
     loop {
         let (stream, addr) = listener.accept().await?;
 
         tokio::spawn(async move {
-            if let Err(error) = handle_client(stream).await {
-                eprintln!("Errod handling client {}: {}", addr, error);
+            if let Err(error) = handle_client(stream, server_options).await {
+                eprintln!("Error handling client {}: {}", addr, error);
             }
         });
     }
 }
 
-async fn handle_client(mut stream: TcpStream) -> Result<()> {
+async fn handle_client(mut stream: TcpStream, config: ServerOptions) -> Result<()> {
     let mut state = ConnectionState::Handshaking;
 
     loop {
@@ -153,6 +164,29 @@ async fn handle_client(mut stream: TcpStream) -> Result<()> {
             }
 
             ConnectionState::Login => {
+                let packet_length = read_varint(&mut stream).await?;
+                
+                let packet_id = read_varint(&mut stream).await?;
+                
+                if packet_id != config.version.login_start_id() {
+                    return Err(Error::new(
+                        ErrorKind::InvalidData,
+                        format!("Invalid packet ID. Expected: {}, got: {}", config.version.login_start_id(), packet_id)
+                    ))
+                }
+                
+                let username = read_string(&mut stream).await?;
+                
+                let mut packet: Vec<u8> = Vec::new();
+                
+                if options.verify_players {
+                    todo!("Add player verification")
+                } else { 
+                    encode_varint(&mut packet, options.version.login_success_id());
+                }
+            }
+            
+            ConnectionState::Configuration => {
                 todo!()
             }
 
@@ -189,15 +223,15 @@ pub async fn read_varint(stream: &mut TcpStream) -> Result<i32> {
         let mut current_byte = [0; 1];
         stream.read_exact(&mut current_byte).await?;
         let byte = current_byte[0];
-        
+
         value |= ((byte & 0x7F) as i32) << position;
-        
+
         if (byte & 0x80) == 0 {
             return Ok(value);
         }
-        
+
         position += 7;
-        
+
         if position >= 35 {
             return Err(Error::new(
                 ErrorKind::InvalidData,
@@ -225,18 +259,18 @@ pub fn encode_varint(buffer: &mut Vec<u8>, mut value: i32) {
 /// Reads a String from the stream
 pub async fn read_string(stream: &mut TcpStream) -> Result<String> {
     let length = read_varint(stream).await?;
-    
+
     if length < 0 || length > 32767 {
         return Err(Error::new(
             ErrorKind::InvalidData,
             format!("Invalid String length : {}", length),
         ));
     }
-    
+
     let length = length as usize;
     let mut string_buffer = vec![0; length];
     stream.read_exact(&mut string_buffer).await?;
-    
+
     String::from_utf8(string_buffer).map_err(|e| {
         Error::new(
             ErrorKind::InvalidData,
