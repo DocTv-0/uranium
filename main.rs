@@ -120,16 +120,16 @@ async fn handle_client(mut stream: TcpStream, config: ServerOptions) -> Result<(
 
                         let status_json = json!({
                             "version": {
-                                "name": options.version.version(),
-                                "protocol": options.version.protocol(),
+                                "name": config.version.version(),
+                                "protocol": config.version.protocol(),
                             },
                             "players": {
-                                "max": options.max_players,
+                                "max": config.max_players,
                                 "online": 0,
                                 "sample": []
                             },
                             "description": {
-                                "text": options.description
+                                "text": config.description
                             }
                         });
 
@@ -165,27 +165,27 @@ async fn handle_client(mut stream: TcpStream, config: ServerOptions) -> Result<(
 
             ConnectionState::Login => {
                 let packet_length = read_varint(&mut stream).await?;
-                
+
                 let packet_id = read_varint(&mut stream).await?;
-                
+
                 if packet_id != config.version.login_start_id() {
                     return Err(Error::new(
                         ErrorKind::InvalidData,
                         format!("Invalid packet ID. Expected: {}, got: {}", config.version.login_start_id(), packet_id)
                     ))
                 }
-                
+
                 let username = read_string(&mut stream).await?;
-                
+
                 let mut packet: Vec<u8> = Vec::new();
-                
-                if options.verify_players {
+
+                if config.verify_players {
                     todo!("Add player verification")
-                } else { 
-                    encode_varint(&mut packet, options.version.login_success_id());
+                } else {
+                    encode_varint(&mut packet, config.version.login_success_id());
                 }
             }
-            
+
             ConnectionState::Configuration => {
                 todo!()
             }
