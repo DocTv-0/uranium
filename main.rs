@@ -1,7 +1,12 @@
+mod nbtlib;
+mod packetlib;
+
+use packetlib::*;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, Error, ErrorKind, Result};
 use tokio::net::{TcpListener, TcpStream};
-use valence_nbt::{compound, Compound, List, to_binary};
 use serde_json::json;
+use crate::nbtlib::{Biome, Dimension};
+use strum::{EnumCount, IntoEnumIterator};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Version {
@@ -82,7 +87,7 @@ async fn handle_client(mut stream: TcpStream, config: ServerOptions) -> Result<(
     loop {
         match state {
             ConnectionState::Handshaking => {
-                let packet_length = read_varint(&mut stream).await?;
+                let _packet_length = read_varint(&mut stream).await?;
 
                 let packet_id = read_varint(&mut stream).await?;
 
@@ -93,11 +98,11 @@ async fn handle_client(mut stream: TcpStream, config: ServerOptions) -> Result<(
                     ));
                 }
 
-                let protocol_version = read_varint(&mut stream).await?;
+                let _protocol_version = read_varint(&mut stream).await?;
 
-                let server_address = read_string(&mut stream).await?;
+                let _server_address = read_string(&mut stream).await?;
 
-                let server_port = read_ushort(&mut stream).await?;
+                let _server_port = read_ushort(&mut stream).await?;
 
                 match read_varint(&mut stream).await? {
                     1 => {state = ConnectionState::Status;},
@@ -112,11 +117,11 @@ async fn handle_client(mut stream: TcpStream, config: ServerOptions) -> Result<(
             }
 
             ConnectionState::Status => {
-                let packet_length = read_varint(&mut stream).await?;
+                let _packet_length = read_varint(&mut stream).await?;
 
                 match read_varint(&mut stream).await? {
                     0 => { // Status Request
-                        let mut packet: Vec<u8> = Vec::new();
+                        let mut packet = Packet::new();
 
                         let status_json = json!({
                             "version": {
@@ -133,23 +138,23 @@ async fn handle_client(mut stream: TcpStream, config: ServerOptions) -> Result<(
                             }
                         });
 
-                        encode_varint(&mut packet, 0x00);
+                        packet.encode_varint(0x00);
 
-                        encode_string(&mut packet, &status_json.to_string() as &str);
+                        packet.encode_string(&status_json.to_string() as &str);
 
-                        send_packet(&mut stream, packet).await?;
+                        packet.send(&mut stream).await?;
                     }
 
                     1 => { // Ping Request
                         let timestamp = read_long(&mut stream).await?;
 
-                        let mut packet: Vec<u8> = Vec::new();
+                        let mut packet = Packet::new();
 
-                        encode_varint(&mut packet, 0x01);
+                        packet.encode_varint(0x01);
 
-                        encode_long(&mut packet, timestamp);
+                        packet.encode_long(timestamp);
 
-                        send_packet(&mut stream, packet).await?;
+                        packet.send(&mut stream).await?;
 
                         return Ok(())
                     }
@@ -164,7 +169,7 @@ async fn handle_client(mut stream: TcpStream, config: ServerOptions) -> Result<(
             }
 
             ConnectionState::Login => {
-                let packet_length = read_varint(&mut stream).await?;
+                let _packet_length = read_varint(&mut stream).await?;
 
                 let packet_id = read_varint(&mut stream).await?;
 
@@ -177,17 +182,89 @@ async fn handle_client(mut stream: TcpStream, config: ServerOptions) -> Result<(
 
                 let username = read_string(&mut stream).await?;
 
-                let mut packet: Vec<u8> = Vec::new();
+                let uuid = read_uuid(&mut stream).await?;
+
+                let mut packet = Packet::new();
 
                 if config.verify_players {
                     todo!("Add player verification")
                 } else {
-                    encode_varint(&mut packet, config.version.login_success_id());
+                    packet.encode_varint(config.version.login_success_id());
+
+                    packet.encode_uuid(uuid);
+
+                    packet.encode_string(username.as_str());
+
+                    // length of the properties array
+                    packet.encode_varint(0);
+
+                    packet.encode_uuid(uuid);
                 }
+
+                packet.send(&mut stream).await?;
+
+                let _acknowledgment_length = read_varint(&mut stream).await?;
+
+                let acknowledgment_id = read_varint(&mut stream).await?;
+
+                if acknowledgment_id != 0x03 {
+                    return Err(Error::new(
+                        ErrorKind::InvalidData,
+                        format!("Invalid acknowledgment ID. Expected: {}, got: {}", 0x03, acknowledgment_id)
+                    ))
+                }
+
+                state = ConnectionState::Configuration;
             }
 
             ConnectionState::Configuration => {
-                todo!()
+                let mut packet = Packet::new();
+
+                packet.encode_varint(0x01);
+
+                packet.encode_string("minecraft:brand");
+
+                packet.encode_string("uranium");
+
+                packet.send(&mut stream).await?;
+
+                let mut packet = Packet::new();
+
+                packet.encode_varint(0x07);
+
+                packet.encode_string("minecraft:dimension_type");
+
+                packet.encode_varint(1);
+
+                packet.encode_string("minecraft:overworld");
+
+                packet.push(1);
+
+                packet.extend_from_slice(&Dimension::Overworld.get_dimension_nbt());
+
+                packet.send(&mut stream).await?;
+
+                let mut packet = Packet::new();
+
+                packet.encode_varint(0x07);
+
+                packet.encode_string("minecraft:worldgen/biome");
+
+                packet.encode_varint(Biome::count() as i32);
+
+                for biome in Biome::iter() {
+                    packet.encode_string(&biome.name());
+
+                    packet.push(1);
+
+                    packet.extend_from_slice(&biome.get_biome_nbt())
+                }
+
+                let mut packet = Packet::new();
+
+                packet.encode_varint(0x03);
+
+                packet.send(&mut stream).await?;
             }
 
             ConnectionState::Play => {
@@ -195,104 +272,4 @@ async fn handle_client(mut stream: TcpStream, config: ServerOptions) -> Result<(
             }
         }
     }
-}
-
-/// Reads an Unsigned Short from the stream
-pub async fn read_ushort(stream: &mut TcpStream) -> Result<u16> {
-    stream.read_u16().await
-}
-
-/// Reads a Long from the stream
-pub async fn read_long(stream: &mut TcpStream) -> Result<i64> {
-    stream.read_i64().await
-}
-
-/// Saves a Long to a vector of bytes
-pub fn encode_long(buffer: &mut Vec<u8>, value: i64) {
-    for byte in value.to_be_bytes() {
-        buffer.push(byte);
-    }
-}
-
-/// Reads a VarInt from the stream
-pub async fn read_varint(stream: &mut TcpStream) -> Result<i32> {
-    let mut value = 0;
-    let mut position = 0;
-
-    loop {
-        let mut current_byte = [0; 1];
-        stream.read_exact(&mut current_byte).await?;
-        let byte = current_byte[0];
-
-        value |= ((byte & 0x7F) as i32) << position;
-
-        if (byte & 0x80) == 0 {
-            return Ok(value);
-        }
-
-        position += 7;
-
-        if position >= 35 {
-            return Err(Error::new(
-                ErrorKind::InvalidData,
-                "VarInt too long, max VarInt length 5 bytes",
-            ));
-        }
-    }
-}
-
-/// Saves a VarInt to a vector of bytes
-pub fn encode_varint(buffer: &mut Vec<u8>, mut value: i32) {
-    loop {
-        let mut temporary = (value & 0x7F) as u8;
-        value = ((value as u32) >> 7) as i32;
-        if value != 0 {
-            temporary |= 0x80;
-        }
-        buffer.push(temporary);
-        if value == 0 {
-            break;
-        }
-    }
-}
-
-/// Reads a String from the stream
-pub async fn read_string(stream: &mut TcpStream) -> Result<String> {
-    let length = read_varint(stream).await?;
-
-    if length < 0 || length > 32767 {
-        return Err(Error::new(
-            ErrorKind::InvalidData,
-            format!("Invalid String length : {}", length),
-        ));
-    }
-
-    let length = length as usize;
-    let mut string_buffer = vec![0; length];
-    stream.read_exact(&mut string_buffer).await?;
-
-    String::from_utf8(string_buffer).map_err(|e| {
-        Error::new(
-            ErrorKind::InvalidData,
-            format!("String contains invalid UTF-8: {}", e),
-        )
-    })
-}
-
-/// Saves a String to a vector of bytes
-pub fn encode_string(buffer: &mut Vec<u8>, text: &str) {
-    let bytes = text.as_bytes();
-    encode_varint(buffer, bytes.len() as i32);
-    buffer.extend_from_slice(bytes);
-}
-
-/// Encodes and sends a packet to the client
-pub async fn send_packet(stream: &mut TcpStream, packet: Vec<u8>) -> Result<()> {
-    let mut final_packet = Vec::new();
-    encode_varint(&mut final_packet, packet.len() as i32);
-    final_packet.extend(packet);
-
-    stream.write_all(&final_packet).await?;
-    stream.flush().await?;
-    Ok(())
 }
