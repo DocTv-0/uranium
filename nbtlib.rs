@@ -1,5 +1,79 @@
-use valence_nbt::{compound, to_binary, List};
 use std::collections::HashMap;
+
+#[derive(Debug, Clone)]
+pub enum NbtValue {
+    String(String),
+    Int(i32),
+    Float(f32),
+    Double(f64),
+    Compound(HashMap<&'static str, NbtValue>),
+    Array(Vec<NbtValue>),
+    Bool(bool),
+}
+
+impl From<&'static str> for NbtValue {
+    fn from(v: &'static str) -> Self { NbtValue::String(v.to_owned()) }
+}
+impl From<i32> for NbtValue {
+    fn from(v: i32) -> Self { NbtValue::Int(v) }
+}
+impl From<HashMap<&'static str, NbtValue>> for NbtValue {
+    fn from(v: HashMap<&'static str, NbtValue>) -> Self { NbtValue::Compound(v) }
+}
+impl From<Vec<NbtValue>> for NbtValue {
+    fn from(v: Vec<NbtValue>) -> Self { NbtValue::Array(v) }
+}
+impl From<bool> for NbtValue {
+    fn from(v: bool) -> Self { NbtValue::Bool(v) }
+}
+impl From<String> for NbtValue {
+    fn from(value: String) -> Self { NbtValue::String(value) }
+}
+impl From<f32> for NbtValue {
+    fn from(value: f32) -> Self { NbtValue::Float(value) }
+}
+impl From<f64> for NbtValue {
+    fn from(value: f64) -> Self { NbtValue::Double(value) }
+}
+
+
+impl NbtValue {
+    fn to_value(&self) -> Result<valence_nbt::Value, String> {
+        match self {
+            NbtValue::String(value) => Ok(valence_nbt::Value::String(value.clone())),
+            NbtValue::Int(value) => Ok(valence_nbt::Value::Int(*value)),
+            NbtValue::Float(value) => Ok(valence_nbt::Value::Float(*value)),
+            NbtValue::Double(value) => Ok(valence_nbt::Value::Double(*value)),
+            NbtValue::Bool(value) => Ok(valence_nbt::Value::Byte(i8::from(*value))),
+            NbtValue::Compound(_values) => Ok(valence_nbt::Value::Compound(self.to_compound()?)),
+            NbtValue::Array(values) => {
+                let mut list = valence_nbt::List::new();
+
+                for value in values {
+                    let converted = value.to_value()?;
+                    if !list.try_push(converted) {
+                        return Err("NBT lists must contain values of one type".to_owned());
+                    }
+                }
+
+                Ok(valence_nbt::Value::List(list))
+            }
+        }
+    }
+
+    pub fn to_compound(&self) -> Result<valence_nbt::Compound, String> {
+        let NbtValue::Compound(values) = self else {
+            return Err("the root NBT value must be a compound".to_owned());
+        };
+
+        let mut compound = valence_nbt::Compound::new();
+        for (key, value) in values {
+            compound.insert((*key).to_owned(), value.to_value()?);
+        }
+
+        Ok(compound)
+    }
+}
 
 macro_rules! hashmap {
     () => {
@@ -20,49 +94,55 @@ macro_rules! hashmap {
     (@replace $x:expr) => { () };
 }
 
+macro_rules! nbt_value {
+    ( [ $( $value:tt ),* $(,)? ] ) => {{
+        NbtValue::Array(vec![ $( nbt_value!($value) ),* ])
+    }};
+    ( { $( $key:tt : $value:tt ),* $(,)? } ) => {{
+        NbtValue::Compound(hashmap! {$( $key => nbt_value!($value) ),* })
+    }};
+    ( $value:expr ) => {{
+        NbtValue::from($value)
+    }}
+}
+
 macro_rules! nbt {
     () => {
         Vec::new()
     };
-
-    ( $( $key:expr => $value:expr ),* $(,)? ) => {
-        {
-            let compound = compound! {
-                $( $key => $value ),*
-            };
-            let mut bytes = Vec::new();
-            to_binary(&compound, &mut bytes, "").unwrap();
-            bytes.drain(1..3);
-            bytes
-        }
-    };
-
-    (@replace $x:expr) => { () };
+    ( $( $key:tt : $val:tt ),* $(,)? ) => {{
+        let nbt = nbt_value!( {$( $key: $val ),*} );
+        let compound = nbt.to_compound().expect("invalid NBT data");
+        let mut bytes = Vec::new();
+        valence_nbt::to_binary(&compound, &mut bytes, "").unwrap();
+        bytes.drain(1..3);
+        bytes
+    }}
 }
 
 macro_rules! damage_type {
     ($message_id:expr, $exhaustion:expr, $scaling:expr) => {
         nbt! {
-            "message_id" => $message_id,
-            "exhaustion" => $exhaustion,
-            "scaling" => $scaling
+            "message_id": $message_id,
+            "exhaustion": $exhaustion,
+            "scaling": $scaling
         }
     };
     ($message_id:expr, $exhaustion:expr, $scaling:expr, $effects:expr) => {
         nbt! {
-            "message_id" => $message_id,
-            "exhaustion" => $exhaustion,
-            "scaling" => $scaling,
-            "effects" => $effects
+            "message_id": $message_id,
+            "exhaustion": $exhaustion,
+            "scaling": $scaling,
+            "effects": $effects
         }
     };
     ($message_id:expr, $exhaustion:expr, $scaling:expr, $effects:expr, $death_message_type:expr) => {
         nbt! {
-            "message_id" => $message_id,
-            "exhaustion" => $exhaustion,
-            "scaling" => $scaling,
-            "effects" => $effects,
-            "death_message_type" => $death_message_type
+            "message_id": $message_id,
+            "exhaustion": $exhaustion,
+            "scaling": $scaling,
+            "effects": $effects,
+            "death_message_type": $death_message_type
         }
     };
 }
@@ -70,10 +150,10 @@ macro_rules! damage_type {
 macro_rules! damage_type_with_death {
     ($message_id:expr, $exhaustion:expr, $scaling:expr, $death_message_type:expr) => {
         nbt! {
-            "message_id" => $message_id,
-            "exhaustion" => $exhaustion,
-            "scaling" => $scaling,
-            "death_message_type" => $death_message_type
+            "message_id": $message_id,
+            "exhaustion": $exhaustion,
+            "scaling": $scaling,
+            "death_message_type": $death_message_type
         }
     };
 }
@@ -81,25 +161,25 @@ macro_rules! damage_type_with_death {
 macro_rules! biome {
     () => {
         nbt! {
-            "has_precipitation" => true,
-            "temperature" => 0.8_f32,
-            "downfall" => 0.4_f32,
-            "effects" => compound! {
-                "sky_color" => 7907327,
-                "water_fog_color" => 329011,
-                "fog_color" => 12638463,
-                "water_color" => 4159204,
-                "mood_sound" => compound! {
-                    "sound" => "minecraft:ambient.cave",
-                    "tick_delay" => 6000,
-                    "block_search_extent" => 8,
-                    "offset" => 2.0_f64
+            "has_precipitation": true,
+            "temperature": 0.8_f32,
+            "downfall": 0.4_f32,
+            "effects": {
+                "sky_color": 7907327,
+                "water_fog_color": 329011,
+                "fog_color": 12638463,
+                "water_color": 4159204,
+                "mood_sound": {
+                    "sound": "minecraft:ambient.cave",
+                    "tick_delay": 6000,
+                    "block_search_extent": 8,
+                    "offset": 2.0_f64
                 }
             },
-            "carvers" => List::List(Vec::new()),
-            "features" => List::List(Vec::new()),
-            "spawners" => compound! {},
-            "spawn_costs" => compound! {}
+            "carvers": [],
+            "features": [],
+            "spawners": {},
+            "spawn_costs": {}
         }
     };
 }
@@ -107,9 +187,11 @@ macro_rules! biome {
 macro_rules! trim_pattern {
     ($trim_name:expr) => {
         nbt! {
-            "asset_id" => format!("minecraft:{}", $trim_name),
-            "description" => compound! {"translate" => format!("trim_pattern.minecraft.{}", $trim_name)},
-            "decal" => 0x00
+            "asset_id": (format!("minecraft:{}", $trim_name)),
+            "description": {
+                "translate": (format!("trim_pattern.minecraft.{}", $trim_name))
+            },
+            "decal": 0x00
         }
     };
 }
@@ -117,9 +199,11 @@ macro_rules! trim_pattern {
 macro_rules! trim_material {
     ($material_name:expr, $item_model_index:expr) => {
         nbt! {
-            "asset_name" => $material_name,
-            "item_model_index" => $item_model_index,
-            "description" => compound! {"translate" => format!("trim_material.minecraft.{}", $material_name)},
+            "asset_name": $material_name,
+            "item_model_index": $item_model_index,
+            "description": {
+                "translate": (format!("trim_material.minecraft.{}", $material_name))
+            },
         }
     };
 }
@@ -127,12 +211,12 @@ macro_rules! trim_material {
 macro_rules! wolf_variant {
     ($name:expr, $biome:expr) => {
         nbt! {
-            "assets" => compound! {
-                "wild" => format!("minecraft:entity/wolf/{}", $name),
-                "tame" => format!("minecraft:entity/wolf/{}_tamed", $name),
-                "angry" => format!("minecraft:entity/wolf/{}_angry", $name)
+            "assets": {
+                "wild": (format!("minecraft:entity/wolf/{}", $name)),
+                "tame": (format!("minecraft:entity/wolf/{}_tamed", $name)),
+                "angry": (format!("minecraft:entity/wolf/{}_angry", $name))
             },
-            "biomes" => $biome
+            "biomes": $biome
         }
     };
 }
@@ -140,21 +224,21 @@ macro_rules! wolf_variant {
 macro_rules! wolf_sound_variant {
     ($name:expr) => {
         nbt! {
-            "adult_sounds" => compound! {
-                "ambient_sound" => format!("minecraft:entity.{}.ambient", $name),
-                "death_sound" => format!("minecraft:entity.{}.death", $name),
-                "growl_sound" => format!("minecraft:entity.{}.growl", $name),
-                "hurt_sound" => format!("minecraft:entity.{}.hurt", $name),
-                "pant_sound" => format!("minecraft:entity.{}.pant", $name),
-                "whine_sound" => format!("minecraft:entity.{}.whine", $name),
+            "adult_sounds": {
+                "ambient_sound": (format!("minecraft:entity.{}.ambient", $name)),
+                "death_sound": (format!("minecraft:entity.{}.death", $name)),
+                "growl_sound": (format!("minecraft:entity.{}.growl", $name)),
+                "hurt_sound": (format!("minecraft:entity.{}.hurt", $name)),
+                "pant_sound": (format!("minecraft:entity.{}.pant", $name)),
+                "whine_sound": (format!("minecraft:entity.{}.whine", $name))
             },
-            "baby_sounds" => compound! {
-                "ambient_sound" => "minecraft:entity.wolf.ambient",
-                "death_sound" => "minecraft:entity.wolf.death",
-                "growl_sound" => "minecraft:entity.wolf.growl",
-                "hurt_sound" => "minecraft:entity.wolf.hurt",
-                "pant_sound" => "minecraft:entity.wolf.pant",
-                "whine_sound" => "minecraft:entity.wolf.whine"
+            "baby_sounds": {
+                "ambient_sound": "minecraft:entity.wolf.ambient",
+                "death_sound": "minecraft:entity.wolf.death",
+                "growl_sound": "minecraft:entity.wolf.growl",
+                "hurt_sound": "minecraft:entity.wolf.hurt",
+                "pant_sound": "minecraft:entity.wolf.pant",
+                "whine_sound": "minecraft:entity.wolf.whine"
             }
         }
     };
@@ -163,8 +247,8 @@ macro_rules! wolf_sound_variant {
 macro_rules! pig_variant {
     ($name:expr, $model:expr) => {
         nbt! {
-            "model" => $model,
-            "asset_id" => format!("minecraft:pig/{}", $name),
+            "model": $model,
+            "asset_id": (format!("minecraft:pig/{}", $name)),
         }
     };
 }
@@ -172,7 +256,16 @@ macro_rules! pig_variant {
 macro_rules! frog_variant {
     ($name:expr) => {
         nbt! {
-            "asset_id" => format!("minecraft:{}", $name),
+            "asset_id": (format!("minecraft:{}", $name)),
+        }
+    };
+}
+
+macro_rules! banner_pattern {
+    ($name:expr) => {
+        nbt! {
+            "asset_id": (format!("minecraft:{}", $name)),
+            "translation_key": (format!("block.minecraft.banner.{}", $name)),
         }
     };
 }
@@ -180,292 +273,163 @@ macro_rules! frog_variant {
 pub fn get_configuration_data() -> HashMap<&'static str, HashMap<&'static str, Vec<u8>>> {
     hashmap! {
         "minecraft:banner_pattern" => hashmap! {
-            "minecraft:base" => nbt! {
-                "asset_id" => "minecraft:base",
-                "translation_key" => "block.minecraft.banner.base"
-            },
-            "minecraft:border" => nbt! {
-                "asset_id" => "minecraft:border",
-                "translation_key" => "block.minecraft.banner.border"
-            },
-            "minecraft:bricks" => nbt! {
-                "asset_id" => "minecraft:bricks",
-                "translation_key" => "block.minecraft.banner.brick"
-            },
-            "minecraft:circle" => nbt! {
-                "asset_id" => "minecraft:circle",
-                "translation_key" => "block.minecraft.banner.circle"
-            },
-            "minecraft:creeper" => nbt! {
-                "asset_id" => "minecraft:creeper",
-                "translation_key" => "block.minecraft.banner.creeper"
-            },
-            "minecraft:cross" => nbt! {
-                "asset_id" => "minecraft:cross",
-                "translation_key" => "block.minecraft.banner.cross"
-            },
-            "minecraft:curly_border" => nbt! {
-                "asset_id" => "minecraft:curly_border",
-                "translation_key" => "block.minecraft.banner.curly_border"
-            },
-            "minecraft:diagonal_left" => nbt! {
-                "asset_id" => "minecraft:diagonal_left",
-                "translation_key" => "block.minecraft.banner.diagonal_left"
-            },
-            "minecraft:diagonal_right" => nbt! {
-                "asset_id" => "minecraft:diagonal_right",
-                "translation_key" => "block.minecraft.banner.diagonal_right"
-            },
-            "minecraft:diagonal_up_left" => nbt! {
-                "asset_id" => "minecraft:diagonal_up_left",
-                "translation_key" => "block.minecraft.banner.diagonal_up_left"
-            },
-            "minecraft:diagonal_up_right" => nbt! {
-                "asset_id" => "minecraft:diagonal_up_right",
-                "translation_key" => "block.minecraft.banner.diagonal_up_right"
-            },
-            "minecraft:flow" => nbt! {
-                "asset_id" => "minecraft:flow",
-                "translation_key" => "block.minecraft.banner.flow"
-            },
-            "minecraft:flower" => nbt! {
-                "asset_id" => "minecraft:flower",
-                "translation_key" => "block.minecraft.banner.flower"
-            },
-            "minecraft:globe" => nbt! {
-                "asset_id" => "minecraft:globe",
-                "translation_key" => "block.minecraft.banner.globe"
-            },
-            "minecraft:gradient" => nbt! {
-                "asset_id" => "minecraft:gradient",
-                "translation_key" => "block.minecraft.banner.gradient"
-            },
-            "minecraft:gradient_up" => nbt! {
-                "asset_id" => "minecraft:gradient_up",
-                "translation_key" => "block.minecraft.banner.gradient_up"
-            },
-            "minecraft:guster" => nbt! {
-                "asset_id" => "minecraft:guster",
-                "translation_key" => "block.minecraft.banner.guster"
-            },
-            "minecraft:half_horizontal" => nbt! {
-                "asset_id" => "minecraft:half_horizontal",
-                "translation_key" => "block.minecraft.banner.half_horizontal"
-            },
-            "minecraft:half_horizontal_bottom" => nbt! {
-                "asset_id" => "minecraft:half_horizontal_bottom",
-                "translation_key" => "block.minecraft.banner.half_horizontal_bottom"
-            },
-            "minecraft:half_vertical" => nbt! {
-                "asset_id" => "minecraft:half_vertical",
-                "translation_key" => "block.minecraft.banner.half_vertical"
-            },
-            "minecraft:half_vertical_right" => nbt! {
-                "asset_id" => "minecraft:half_vertical_right",
-                "translation_key" => "block.minecraft.banner.half_vertical_right"
-            },
-            "minecraft:mojang" => nbt! {
-                "asset_id" => "minecraft:mojang",
-                "translation_key" => "block.minecraft.banner.mojang"
-            },
-            "minecraft:piglin" => nbt! {
-                "asset_id" => "minecraft:piglin",
-                "translation_key" => "block.minecraft.banner.piglin"
-            },
-            "minecraft:rhombus" => nbt! {
-                "asset_id" => "minecraft:rhombus",
-                "translation_key" => "block.minecraft.banner.rhombus"
-            },
-            "minecraft:skull" => nbt! {
-                "asset_id" => "minecraft:skull",
-                "translation_key" => "block.minecraft.banner.skull"
-            },
-            "minecraft:small_stripes" => nbt! {
-                "asset_id" => "minecraft:small_stripes",
-                "translation_key" => "block.minecraft.banner.small_stripes"
-            },
-            "minecraft:square_bottom_left" => nbt! {
-                "asset_id" => "minecraft:square_bottom_left",
-                "translation_key" => "block.minecraft.banner.square_bottom_left"
-            },
-            "minecraft:square_bottom_right" => nbt! {
-                "asset_id" => "minecraft:square_bottom_right",
-                "translation_key" => "block.minecraft.banner.square_bottom_right"
-            },
-            "minecraft:square_top_left" => nbt! {
-                "asset_id" => "minecraft:square_top_left",
-                "translation_key" => "block.minecraft.banner.square_top_left"
-            },
-            "minecraft:square_top_right" => nbt! {
-                "asset_id" => "minecraft:square_top_right",
-                "translation_key" => "block.minecraft.banner.square_top_right"
-            },
-            "minecraft:straight_cross" => nbt! {
-                "asset_id" => "minecraft:straight_cross",
-                "translation_key" => "block.minecraft.banner.square_cross"
-            },
-            "minecraft:stripe_bottom" => nbt! {
-                "asset_id" => "minecraft:stripe_bottom",
-                "translation_key" => "block.minecraft.banner.stripe.bottom"
-            },
-            "minecraft:stripe_center" => nbt! {
-                "asset_id" => "minecraft:stripe_center",
-                "translation_key" => "block.minecraft.banner.stripe.center"
-            },
-            "minecraft:stripe_downleft" => nbt! {
-                "asset_id" => "minecraft:stripe_downleft",
-                "translation_key" => "block.minecraft.banner.stripe.downleft"
-            },
-            "minecraft:stripe_downright" => nbt! {
-                "asset_id" => "minecraft:stripe_downright",
-                "translation_key" => "block.minecraft.banner.stripe.downright"
-            },
-            "minecraft:stripe_left" => nbt! {
-                "asset_id" => "minecraft:stripe_left",
-                "translation_key" => "block.minecraft.banner.stripe.left"
-            },
-            "minecraft:stripe_middle" => nbt! {
-                "asset_id" => "minecraft:stripe_middle",
-                "translation_key" => "block.minecraft.banner.stripe.middle"
-            },
-            "minecraft:stripe_right" => nbt! {
-                "asset_id" => "minecraft:stripe_right",
-                "translation_key" => "block.minecraft.banner.stripe.right"
-            },
-            "minecraft:stripe_top" => nbt! {
-                "asset_id" => "minecraft:stripe_top",
-                "translation_key" => "block.minecraft.banner.stripe.top"
-            },
-            "minecraft:triangle_bottom" => nbt! {
-                "asset_id" => "minecraft:triangle_bottom",
-                "translation_key" => "block.minecraft.banner.triangle.bottom"
-            },
-            "minecraft:triangle_top" => nbt! {
-                "asset_id" => "minecraft:triangle_top",
-                "translation_key" => "block.minecraft.banner.triangle.top"
-            },
-            "minecraft:triangles_bottom" => nbt! {
-                "asset_id" => "minecraft:triangles_bottom",
-                "translation_key" => "block.minecraft.banner.triangles.bottom"
-            },
-            "minecraft:triangles_top" => nbt! {
-                "asset_id" => "minecraft:triangles_top",
-                "translation_key" => "block.minecraft.banner.triangles.top"
-            }
+            "minecraft:base" => banner_pattern!("base"),
+            "minecraft:border" => banner_pattern!("border"),
+            "minecraft:bricks" => banner_pattern!("bricks"),
+            "minecraft:circle" => banner_pattern!("circle"),
+            "minecraft:creeper" => banner_pattern!("creeper"),
+            "minecraft:cross" => banner_pattern!("cross"),
+            "minecraft:curly_border" => banner_pattern!("curly_border"),
+            "minecraft:diagonal_left" => banner_pattern!("diagonal_left"),
+            "minecraft:diagonal_right" => banner_pattern!("diagonal_right"),
+            "minecraft:diagonal_up_left" => banner_pattern!("diagonal_up_left"),
+            "minecraft:diagonal_up_right" => banner_pattern!("diagonal_up_right"),
+            "minecraft:flow" => banner_pattern!("flow"),
+            "minecraft:flower" => banner_pattern!("flower"),
+            "minecraft:globe" => banner_pattern!("globe"),
+            "minecraft:gradient" => banner_pattern!("gradient"),
+            "minecraft:gradient_up" => banner_pattern!("gradient_up"),
+            "minecraft:guster" => banner_pattern!("guster"),
+            "minecraft:half_horizontal" => banner_pattern!("half_horizontal"),
+            "minecraft:half_horizontal_bottom" => banner_pattern!("half_horizontal_bottom"),
+            "minecraft:half_vertical" => banner_pattern!("half_vertical"),
+            "minecraft:half_vertical_right" => banner_pattern!("half_vertical_right"),
+            "minecraft:mojang" => banner_pattern!("mojang"),
+            "minecraft:piglin" => banner_pattern!("piglin"),
+            "minecraft:rhombus" => banner_pattern!("rhombus"),
+            "minecraft:skull" => banner_pattern!("skull"),
+            "minecraft:small_stripes" => banner_pattern!("small_stripes"),
+            "minecraft:square_bottom_left" => banner_pattern!("square_bottom_left"),
+            "minecraft:square_bottom_right" => banner_pattern!("square_bottom_right"),
+            "minecraft:square_top_left" => banner_pattern!("square_top_left"),
+            "minecraft:square_top_right" => banner_pattern!("square_top_right"),
+            "minecraft:straight_cross" => banner_pattern!("straight_cross"),
+            "minecraft:stripe_bottom" => banner_pattern!("stripe_bottom"),
+            "minecraft:stripe_center" => banner_pattern!("stripe_center"),
+            "minecraft:stripe_downleft" => banner_pattern!("stripe_downleft"),
+            "minecraft:stripe_downright" => banner_pattern!("stripe_downright"),
+            "minecraft:stripe_left" => banner_pattern!("stripe_left"),
+            "minecraft:stripe_middle" => banner_pattern!("stripe_middle"),
+            "minecraft:stripe_right" => banner_pattern!("stripe_right"),
+            "minecraft:stripe_top" => banner_pattern!("stripe_top"),
+            "minecraft:triangle_bottom" => banner_pattern!("triangle_bottom"),
+            "minecraft:triangle_top" => banner_pattern!("triangle_top"),
+            "minecraft:triangles_bottom" => banner_pattern!("triangles_bottom"),
+            "minecraft:triangles_top" => banner_pattern!("triangles_top")
         },
         "minecraft:chat_type" => hashmap! {
             "minecraft:chat" => nbt! {
-                "chat" => compound! {
-                    "translation_key" => "chat.type.text",
-                    "parameters" => List::String(vec![
-                        "sender".to_owned(),
-                        "content".to_owned()
-                    ])
+                "chat": {
+                    "translation_key": "chat.type.text",
+                    "parameters": [
+                        "sender",
+                        "content"
+                    ]
                 },
-                "narration" => compound! {
-                    "translation_key" => "chat.type.text.narrate",
-                    "parameters" => List::String(vec![
-                        "sender".to_owned(),
-                        "content".to_owned()
-                    ])
+                "narration": {
+                    "translation_key": "chat.type.text.narrate",
+                    "parameters": [
+                        "sender",
+                        "content"
+                    ]
                 }
             },
             "minecraft:emote_command" => nbt! {
-                "chat" => compound! {
-                    "translation_key" => "chat.type.emote",
-                    "parameters" => List::String(vec![
-                        "sender".to_owned(),
-                        "content".to_owned()
-                    ])
+                "chat": {
+                    "translation_key": "chat.type.emote",
+                    "parameters": [
+                        "sender",
+                        "content"
+                    ]
                 },
-                "narration" => compound! {
-                    "translation_key" => "chat.type.emote",
-                    "parameters" => List::String(vec![
-                        "sender".to_owned(),
-                        "content".to_owned()
-                    ])
+                "narration": {
+                    "translation_key": "chat.type.emote",
+                    "parameters": [
+                        "sender",
+                        "content"
+                    ]
                 }
             },
             "minecraft:msg_command_incoming" => nbt! {
-                "chat" => compound! {
-                    "translation_key" => "commands.message.display.incoming",
-                    "parameters" => List::String(vec![
-                        "sender".to_owned(),
-                        "content".to_owned()
-                    ])
+                "chat": {
+                    "translation_key": "commands.message.display.incoming",
+                    "parameters": [
+                        "sender",
+                        "content"
+                    ]
                 },
-                "narration" => compound! {
-                    "translation_key" => "chat.type.text.narrate",
-                    "parameters" => List::String(vec![
-                        "sender".to_owned(),
-                        "content".to_owned()
-                    ])
+                "narration": {
+                    "translation_key": "chat.type.text.narrate",
+                    "parameters": [
+                        "sender",
+                        "content"
+                    ]
                 }
             },
             "minecraft:msg_command_outgoing" => nbt! {
-                "chat" => compound! {
-                    "translation_key" => "commands.message.display.outgoing",
-                    "parameters" => List::String(vec![
-                        "target".to_owned(),
-                        "content".to_owned()
-                    ])
+                "chat": {
+                    "translation_key": "commands.message.display.outgoing",
+                    "parameters": [
+                        "target",
+                        "content"
+                    ]
                 },
-                "narration" => compound! {
-                    "translation_key" => "chat.type.text.narrate",
-                    "parameters" => List::String(vec![
-                        "target".to_owned(),
-                        "content".to_owned()
-                    ])
+                "narration": {
+                    "translation_key": "chat.type.text.narrate",
+                    "parameters": [
+                        "target",
+                        "content"
+                    ]
                 }
             },
             "minecraft:say_command" => nbt! {
-                "chat" => compound! {
-                    "translation_key" => "chat.type.announcement",
-                    "parameters" => List::String(vec![
-                        "sender".to_owned(),
-                        "content".to_owned()
-                    ])
+                "chat": {
+                    "translation_key": "chat.type.announcement",
+                    "parameters": [
+                        "sender",
+                        "content"
+                    ]
                 },
-                "narration" => compound! {
-                    "translation_key" => "chat.type.text.narrate",
-                    "parameters" => List::String(vec![
-                        "sender".to_owned(),
-                        "content".to_owned()
-                    ])
+                "narration": {
+                    "translation_key": "chat.type.text.narrate",
+                    "parameters": [
+                        "sender",
+                        "content"
+                    ]
                 }
             },
             "minecraft:team_msg_command_incoming" => nbt! {
-                "chat" => compound! {
-                    "translation_key" => "chat.type.team.text",
-                    "parameters" => List::String(vec![
-                        "target".to_owned(),
-                        "sender".to_owned(),
-                        "content".to_owned()
-                    ])
+                "chat": {
+                    "translation_key": "chat.type.team.text",
+                    "parameters": [
+                        "target",
+                        "sender",
+                        "content"
+                    ]
                 },
-                "narration" => compound! {
-                    "translation_key" => "chat.type.text.narrate",
-                    "parameters" => List::String(vec![
-                        "sender".to_owned(),
-                        "content".to_owned()
-                    ])
+                "narration": {
+                    "translation_key": "chat.type.text.narrate",
+                    "parameters": [
+                        "sender",
+                        "content"
+                    ]
                 }
             },
             "minecraft:team_msg_command_outgoing" => nbt! {
-                "chat" => compound! {
-                    "translation_key" => "chat.type.team.sent",
-                    "parameters" => List::String(vec![
-                        "target".to_owned(),
-                        "sender".to_owned(),
-                        "content".to_owned()
-                    ])
+                "chat": {
+                    "translation_key": "chat.type.team.sent",
+                    "parameters": [
+                        "target",
+                        "sender",
+                        "content"
+                    ]
                 },
-                "narration" => compound! {
-                    "translation_key" => "chat.type.text.narrate",
-                    "parameters" => List::String(vec![
-                        "sender".to_owned(),
-                        "content".to_owned()
-                    ])
+                "narration": {
+                    "translation_key": "chat.type.text.narrate",
+                    "parameters": [
+                        "sender",
+                        "content"
+                    ]
                 }
             }
         },
@@ -623,8 +587,8 @@ pub fn get_configuration_data() -> HashMap<&'static str, HashMap<&'static str, V
             "minecraft:quartz" => trim_material!("quartz", 0.8),
             "minecraft:redstone" => trim_material!("redstone", 0.7),
             "minecraft:resin" => nbt! {
-                "asset_name" => "resin",
-                "description" => compound! {"translate" => "trim_material.minecraft.resin"}
+                "asset_name": "resin",
+                "description": {"translate": "trim_material.minecraft.resin"}
             }
         },
         "minecraft:wolf_variant" => hashmap! {
@@ -658,70 +622,70 @@ pub fn get_configuration_data() -> HashMap<&'static str, HashMap<&'static str, V
             "minecraft:warm" => frog_variant!("warm")
         },
         "minecraft:cat_variant" => hashmap! {
-            "minecraft:all_black" => nbt! {"asset_id" => "minecraft:all_black"},
-            "minecraft:black" => nbt! {"asset_id" => "minecraft:black"},
-            "minecraft:british_shorthair" => nbt! {"asset_id" => "minecraft:british_shorthair"},
-            "minecraft:calico" => nbt! {"asset_id" => "minecraft:calico"},
-            "minecraft:jellie" => nbt! {"asset_id" => "minecraft:jellie"},
-            "minecraft:persian" => nbt! {"asset_id" => "minecraft:persian"},
-            "minecraft:ragdoll" => nbt! {"asset_id" => "minecraft:ragdoll"},
-            "minecraft:red" => nbt! {"asset_id" => "minecraft:red"},
-            "minecraft:siamese" => nbt! {"asset_id" => "minecraft:siamese"},
-            "minecraft:tabby" => nbt! {"asset_id" => "minecraft:tabby"},
-            "minecraft:white" => nbt! {"asset_id" => "minecraft:white"},
+            "minecraft:all_black" => nbt! {"asset_id": "minecraft:all_black"},
+            "minecraft:black" => nbt! {"asset_id": "minecraft:black"},
+            "minecraft:british_shorthair" => nbt! {"asset_id": "minecraft:british_shorthair"},
+            "minecraft:calico" => nbt! {"asset_id": "minecraft:calico"},
+            "minecraft:jellie" => nbt! {"asset_id": "minecraft:jellie"},
+            "minecraft:persian" => nbt! {"asset_id": "minecraft:persian"},
+            "minecraft:ragdoll" => nbt! {"asset_id": "minecraft:ragdoll"},
+            "minecraft:red" => nbt! {"asset_id": "minecraft:red"},
+            "minecraft:siamese" => nbt! {"asset_id": "minecraft:siamese"},
+            "minecraft:tabby" => nbt! {"asset_id": "minecraft:tabby"},
+            "minecraft:white" => nbt! {"asset_id": "minecraft:white"},
         },
         "minecraft:cow_variant" => hashmap! {
             "minecraft:temperate" => nbt! {
-                "model" => "normal",
-                "asset_id" => "minecraft:temperate_cow",
-                "spawn_conditions" => List::Compound(vec![
-                    compound! {
-                        "priority" => 0
+                "model": "normal",
+                "asset_id": "minecraft:temperate_cow",
+                "spawn_conditions": [
+                    {
+                        "priority": 0
                     }
-                ])
+                ]
             },
             "minecraft:cold" => nbt! {
-                "model" => "cold",
-                "asset_id" => "minecraft:cold_cow",
-                "spawn_conditions" => List::Compound(vec![
-                    compound! {
-                        "priority" => 1,
-                        "condition" => compound! {
-                            "biomes" => List::String(vec![
-                                "minecraft:taiga".to_string(),
-                                "minecraft:snowy_taiga".to_string(),
-                                "minecraft:old_growth_pine_taiga".to_string(),
-                                "minecraft:old_growth_spruce_taiga".to_string(),
-                                "minecraft:windswept_hills".to_string(),
-                                "minecraft:windswept_gravelly_hills".to_string(),
-                                "minecraft:windswept_forest".to_string()
-                            ])
+                "model": "cold",
+                "asset_id": "minecraft:cold_cow",
+                "spawn_conditions": [
+                    {
+                        "priority": 1,
+                        "condition": {
+                            "biomes": [
+                                "minecraft:taiga",
+                                "minecraft:snowy_taiga",
+                                "minecraft:old_growth_pine_taiga",
+                                "minecraft:old_growth_spruce_taiga",
+                                "minecraft:windswept_hills",
+                                "minecraft:windswept_gravelly_hills",
+                                "minecraft:windswept_forest"
+                            ]
                         }
                     }
-                ])
+                ]
             },
             "minecraft:warm" => nbt! {
-                "model" => "warm",
-                "asset_id" => "minecraft:warm_cow",
-                "spawn_conditions" => List::Compound(vec![
-                    compound! {
-                        "priority" => 1,
-                        "condition" => compound! {
-                            "biomes" => List::String(vec![
-                                "minecraft:savanna".to_string(),
-                                "minecraft:savanna_plateau".to_string(),
-                                "minecraft:windswept_savanna".to_string(),
-                                "minecraft:jungle".to_string(),
-                                "minecraft:sparse_jungle".to_string(),
-                                "minecraft:bamboo_jungle".to_string(),
-                                "minecraft:badlands".to_string(),
-                                "minecraft:eroded_badlands".to_string(),
-                                "minecraft:wooded_badlands".to_string()
-                            ])
+                "model": "warm",
+                "asset_id": "minecraft:warm_cow",
+                "spawn_conditions": [
+                    {
+                        "priority": 1,
+                        "condition": {
+                            "biomes": [
+                                "minecraft:savanna",
+                                "minecraft:savanna_plateau",
+                                "minecraft:windswept_savanna",
+                                "minecraft:jungle",
+                                "minecraft:sparse_jungle",
+                                "minecraft:bamboo_jungle",
+                                "minecraft:badlands",
+                                "minecraft:eroded_badlands",
+                                "minecraft:wooded_badlands"
+                            ]
                         }
                     }
-                ])
+                ]
             }
-        }
+        },
     }
 }
