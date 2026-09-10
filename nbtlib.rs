@@ -1,79 +1,6 @@
 use std::collections::HashMap;
-
-#[derive(Debug, Clone)]
-pub enum NbtValue {
-    String(String),
-    Int(i32),
-    Float(f32),
-    Double(f64),
-    Compound(HashMap<&'static str, NbtValue>),
-    Array(Vec<NbtValue>),
-    Bool(bool),
-}
-
-impl From<&'static str> for NbtValue {
-    fn from(v: &'static str) -> Self { NbtValue::String(v.to_owned()) }
-}
-impl From<i32> for NbtValue {
-    fn from(v: i32) -> Self { NbtValue::Int(v) }
-}
-impl From<HashMap<&'static str, NbtValue>> for NbtValue {
-    fn from(v: HashMap<&'static str, NbtValue>) -> Self { NbtValue::Compound(v) }
-}
-impl From<Vec<NbtValue>> for NbtValue {
-    fn from(v: Vec<NbtValue>) -> Self { NbtValue::Array(v) }
-}
-impl From<bool> for NbtValue {
-    fn from(v: bool) -> Self { NbtValue::Bool(v) }
-}
-impl From<String> for NbtValue {
-    fn from(value: String) -> Self { NbtValue::String(value) }
-}
-impl From<f32> for NbtValue {
-    fn from(value: f32) -> Self { NbtValue::Float(value) }
-}
-impl From<f64> for NbtValue {
-    fn from(value: f64) -> Self { NbtValue::Double(value) }
-}
-
-
-impl NbtValue {
-    fn to_value(&self) -> Result<valence_nbt::Value, String> {
-        match self {
-            NbtValue::String(value) => Ok(valence_nbt::Value::String(value.clone())),
-            NbtValue::Int(value) => Ok(valence_nbt::Value::Int(*value)),
-            NbtValue::Float(value) => Ok(valence_nbt::Value::Float(*value)),
-            NbtValue::Double(value) => Ok(valence_nbt::Value::Double(*value)),
-            NbtValue::Bool(value) => Ok(valence_nbt::Value::Byte(i8::from(*value))),
-            NbtValue::Compound(_values) => Ok(valence_nbt::Value::Compound(self.to_compound()?)),
-            NbtValue::Array(values) => {
-                let mut list = valence_nbt::List::new();
-
-                for value in values {
-                    let converted = value.to_value()?;
-                    if !list.try_push(converted) {
-                        return Err("NBT lists must contain values of one type".to_owned());
-                    }
-                }
-
-                Ok(valence_nbt::Value::List(list))
-            }
-        }
-    }
-
-    pub fn to_compound(&self) -> Result<valence_nbt::Compound, String> {
-        let NbtValue::Compound(values) = self else {
-            return Err("the root NBT value must be a compound".to_owned());
-        };
-
-        let mut compound = valence_nbt::Compound::new();
-        for (key, value) in values {
-            compound.insert((*key).to_owned(), value.to_value()?);
-        }
-
-        Ok(compound)
-    }
-}
+use nbt::nbt;
+use valence_nbt::compound;
 
 macro_rules! hashmap {
     () => {
@@ -92,32 +19,6 @@ macro_rules! hashmap {
     };
 
     (@replace $x:expr) => { () };
-}
-
-macro_rules! nbt_value {
-    ( [ $( $value:tt ),* $(,)? ] ) => {{
-        NbtValue::Array(vec![ $( nbt_value!($value) ),* ])
-    }};
-    ( { $( $key:tt : $value:tt ),* $(,)? } ) => {{
-        NbtValue::Compound(hashmap! {$( $key => nbt_value!($value) ),* })
-    }};
-    ( $value:expr ) => {{
-        NbtValue::from($value)
-    }}
-}
-
-macro_rules! nbt {
-    () => {
-        Vec::new()
-    };
-    ( $( $key:tt : $val:tt ),* $(,)? ) => {{
-        let nbt = nbt_value!( {$( $key: $val ),*} );
-        let compound = nbt.to_compound().expect("invalid NBT data");
-        let mut bytes = Vec::new();
-        valence_nbt::to_binary(&compound, &mut bytes, "").unwrap();
-        bytes.drain(1..3);
-        bytes
-    }}
 }
 
 macro_rules! damage_type {
@@ -225,12 +126,12 @@ macro_rules! wolf_sound_variant {
     ($name:expr) => {
         nbt! {
             "adult_sounds": {
-                "ambient_sound": (format!("minecraft:entity.{}.ambient", $name)),
-                "death_sound": (format!("minecraft:entity.{}.death", $name)),
-                "growl_sound": (format!("minecraft:entity.{}.growl", $name)),
-                "hurt_sound": (format!("minecraft:entity.{}.hurt", $name)),
-                "pant_sound": (format!("minecraft:entity.{}.pant", $name)),
-                "whine_sound": (format!("minecraft:entity.{}.whine", $name))
+                "ambient_sound": format!("minecraft:entity.{}.ambient", $name),
+                "death_sound": format!("minecraft:entity.{}.death", $name),
+                "growl_sound": format!("minecraft:entity.{}.growl", $name),
+                "hurt_sound": format!("minecraft:entity.{}.hurt", $name),
+                "pant_sound": format!("minecraft:entity.{}.pant", $name),
+                "whine_sound": format!("minecraft:entity.{}.whine", $name)
             },
             "baby_sounds": {
                 "ambient_sound": "minecraft:entity.wolf.ambient",
@@ -256,7 +157,7 @@ macro_rules! pig_variant {
 macro_rules! frog_variant {
     ($name:expr) => {
         nbt! {
-            "asset_id": (format!("minecraft:{}", $name)),
+            "asset_id": concat!("minecraft:", $name),
         }
     };
 }
@@ -264,8 +165,8 @@ macro_rules! frog_variant {
 macro_rules! banner_pattern {
     ($name:expr) => {
         nbt! {
-            "asset_id": (format!("minecraft:{}", $name)),
-            "translation_key": (format!("block.minecraft.banner.{}", $name)),
+            "asset_id": concat!("minecraft:", $name),
+            "translation_key": concat!("block.minecraft.banner.", $name),
         }
     };
 }
