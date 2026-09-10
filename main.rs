@@ -1,6 +1,7 @@
 mod nbtlib;
 mod packetlib;
 
+use std::collections::HashMap;
 use packetlib::*;
 use tokio::io::{Error, ErrorKind, Result};
 use tokio::net::{TcpListener, TcpStream};
@@ -67,20 +68,24 @@ async fn main() -> Result<()> {
         simulation_distance: 5,
     };
 
+    let configuration_data = get_configuration_data();
+
     let listener = TcpListener::bind("127.0.0.1:25565").await?;
 
     loop {
         let (stream, addr) = listener.accept().await?;
 
+        let data = configuration_data.clone();
+
         tokio::spawn(async move {
-            if let Err(error) = handle_client(stream, server_options).await {
+            if let Err(error) = handle_client(stream, server_options, &data).await {
                 eprintln!("Error handling client {}: {}", addr, error);
             }
         });
     }
 }
 
-async fn handle_client(mut stream: TcpStream, config: ServerConfig) -> Result<()> {
+async fn handle_client(mut stream: TcpStream, config: ServerConfig, configuration_data: &HashMap<&str, HashMap<&str, Vec<u8>>>) -> Result<()> {
     let mut state = ConnectionState::Handshaking;
 
     loop {
@@ -228,7 +233,7 @@ async fn handle_client(mut stream: TcpStream, config: ServerConfig) -> Result<()
 
                 packet.send(&mut stream).await?;
 
-                for (key, value) in get_configuration_data() {
+                for (key, value) in configuration_data {
                     let mut packet = Packet::new();
 
                     packet.encode_varint(0x07);
