@@ -1,6 +1,11 @@
 use quote::quote;
 use proc_macro2::Span;
-use syn::{parse_macro_input, Token, Result, parse::{Parse, ParseStream}, LitStr, token};
+use syn::{
+    parse_macro_input, Token, Result,
+    parse::{Parse, ParseStream, Parser},
+    punctuated::Punctuated,
+    LitStr, token,
+};
 
 struct Nbt {
     values: Vec<NbtKeyValuePair>,
@@ -258,9 +263,125 @@ fn literal_expr_to_value(expr: &syn::Expr) -> Result<valence_nbt::Value> {
         }
         syn::Expr::Paren(expr) => literal_expr_to_value(&expr.expr),
         syn::Expr::Group(expr) => literal_expr_to_value(&expr.expr),
+        syn::Expr::Macro(expr) => {
+            let name = expr.mac.path.segments.last().map(|segment| segment.ident.to_string());
+            match name.as_deref() {
+                Some("concat") => Ok(Value::String(eval_concat(&expr.mac.tokens)?)),
+                Some("format") => Ok(Value::String(eval_format(&expr.mac.tokens, expr.span())?)),
+                _ => Err(syn::Error::new(
+                    expr.span(),
+                    "unsupported macro expression for NBT",
+                )),
+            }
+        }
         expr => Err(syn::Error::new(
             expr.span(),
             "expected a literal NBT value",
+        )),
+    }
+}
+
+fn parse_macro_args(tokens: proc_macro2::TokenStream) -> Result<Punctuated<syn::Expr, Token![,]>> {
+    Punctuated::<syn::Expr, Token![,]>::parse_terminated.parse2(tokens)
+}
+
+fn eval_concat(tokens: &proc_macro2::TokenStream) -> Result<String> {
+    parse_macro_args(tokens.clone())?
+        .iter()
+        .try_fold(String::new(), |mut output, value| {
+            output.push_str(&literal_expr_to_string(value)?);
+            Ok(output)
+        })
+}
+
+fn eval_format(tokens: &proc_macro2::TokenStream, span: Span) -> Result<String> {
+    let args = parse_macro_args(tokens.clone())?;
+    let Some(syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(template), .. })) = args.first()
+    else {
+        return Err(syn::Error::new(span, "format! requires a string literal"));
+    };
+
+    let values = args.iter().skip(1).map(literal_expr_to_string).collect::<Result<Vec<_>>>()?;
+    let mut output = String::new();
+    let template_value = template.value();
+    let mut chars = template_value.chars().peekable();
+    let mut value_index = 0;
+
+    while let Some(character) = chars.next() {
+        match character {
+            '{' if chars.peek() == Some(&'{') => {
+                chars.next();
+                output.push('{');
+            }
+            '}' if chars.peek() == Some(&'}') => {
+                chars.next();
+                output.push('}');
+            }
+            '{' => {
+                if chars.next() != Some('}') {
+                    return Err(syn::Error::new(
+                        template.span(),
+                        "only `{}` placeholders are supported in format!",
+                    ));
+                }
+                let Some(value) = values.get(value_index) else {
+                    return Err(syn::Error::new(
+                        template.span(),
+                        "format! has fewer arguments than placeholders",
+                    ));
+                };
+                output.push_str(value);
+                value_index += 1;
+            }
+            '}' => {
+                return Err(syn::Error::new(
+                    template.span(),
+                    "unmatched `}` in format!",
+                ));
+            }
+            character => output.push(character),
+        }
+    }
+
+    if value_index != values.len() {
+        return Err(syn::Error::new(
+            template.span(),
+            "format! has more arguments than placeholders",
+        ));
+    }
+    Ok(output)
+}
+
+fn literal_expr_to_string(expr: &syn::Expr) -> Result<String> {
+    use syn::spanned::Spanned;
+
+    match expr {
+        syn::Expr::Lit(expr) => match &expr.lit {
+            syn::Lit::Str(value) => Ok(value.value()),
+            syn::Lit::Bool(value) => Ok(value.value.to_string()),
+            syn::Lit::Int(value) => Ok(value.base10_digits().to_owned()),
+            syn::Lit::Float(value) => Ok(value.base10_digits().to_owned()),
+            literal => Err(syn::Error::new(
+                literal.span(),
+                "concat!/format! arguments must be string, boolean, or numeric literals",
+            )),
+        },
+        syn::Expr::Paren(expr) => literal_expr_to_string(&expr.expr),
+        syn::Expr::Group(expr) => literal_expr_to_string(&expr.expr),
+        syn::Expr::Macro(expr) => {
+            let name = expr.mac.path.segments.last().map(|segment| segment.ident.to_string());
+            match name.as_deref() {
+                Some("concat") => eval_concat(&expr.mac.tokens),
+                Some("format") => eval_format(&expr.mac.tokens, expr.span()),
+                _ => Err(syn::Error::new(
+                    expr.span(),
+                    "unsupported macro expression in concat!/format!",
+                )),
+            }
+        }
+        expr => Err(syn::Error::new(
+            expr.span(),
+            "concat!/format! arguments must be literals",
         )),
     }
 }
@@ -400,6 +521,27 @@ fn is_literal_expr(expr: &syn::Expr) -> bool {
         syn::Expr::Paren(expr) => is_literal_expr(&expr.expr),
         syn::Expr::Group(expr) => is_literal_expr(&expr.expr),
 
+        syn::Expr::Macro(expr) => {
+            let name = expr.mac.path.segments.last().map(|segment| segment.ident.to_string());
+            match name.as_deref() {
+                Some("concat") => parse_macro_args(expr.mac.tokens.clone())
+                    .map(|args| args.iter().all(is_literal_expr))
+                    .unwrap_or(false),
+                Some("format") => parse_macro_args(expr.mac.tokens.clone())
+                    .map(|args| {
+                        args.iter().all(is_literal_expr)
+                            && args.first().is_some_and(|arg| {
+                                matches!(arg, syn::Expr::Lit(syn::ExprLit {
+                                    lit: syn::Lit::Str(_),
+                                    ..
+                                }))
+                            })
+                    })
+                    .unwrap_or(false),
+                _ => false,
+            }
+        }
+
         _ => false,
     }
 }
@@ -428,11 +570,9 @@ pub fn nbt(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             let nbt = #nbt;
             let mut bytes = Vec::new();
             valence_nbt::to_binary(&nbt, &mut bytes, "").unwrap();
-            bytes.copy_within(3.., 1);
-            bytes.truncate(bytes.len() - 2);
+            bytes.drain(..3);
+            bytes.pop();
             bytes
         }}.into()
     }
-
-
 }
